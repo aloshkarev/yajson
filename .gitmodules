@@ -1,0 +1,3 @@
+[submodule "hl-tidy-ext"]
+	path = hl-tidy-ext
+	url = https://github.com/aloshkarev/hl-tidy-ext

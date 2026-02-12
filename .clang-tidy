@@ -1,0 +1,8 @@
+Checks: >
+  -*,
+  hl-perf-*,
+  hl-modernize-*
+
+CheckOptions:
+  - key: hl-modernize-prefer-inplace-vector.MaxInplaceSize
+    value: 64
