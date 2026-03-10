@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -115,6 +116,17 @@ TEST(ThreadSafeJson, Update) {
         result = v.as_integer();
     });
     EXPECT_EQ(result, 20);
+}
+
+TEST(ThreadSafeJson, UpdateExceptionKeepsValue) {
+    ThreadSafeJson tsj(JsonValue(10));
+    EXPECT_THROW(tsj.update([](const JsonValue&) -> JsonValue {
+        throw std::runtime_error("boom");
+    }), std::runtime_error);
+
+    int64_t result = 0;
+    tsj.read([&result](const JsonValue& v) { result = v.as_integer(); });
+    EXPECT_EQ(result, 10);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

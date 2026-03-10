@@ -11,6 +11,7 @@
 /// Use try_parse(input) for exception-free parsing.
 
 #include <cstddef>
+#include <charconv>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -148,10 +149,24 @@ public:
     }
 
 private:
+    static void append_uint(std::string& out, size_t value) {
+        char buf[32];
+        auto [p, ec] = std::to_chars(buf, buf + sizeof(buf), value);
+        if (ec == std::errc{}) out.append(buf, static_cast<size_t>(p - buf));
+        else out += "?";
+    }
+
     static std::string format_message(const std::string& msg,
                                       const SourceLocation& loc) {
-        return "JSON parse error at line " + std::to_string(loc.line) +
-               ", column " + std::to_string(loc.column) + ": " + msg;
+        std::string out;
+        out.reserve(64 + msg.size());
+        out += "JSON parse error at line ";
+        append_uint(out, loc.line);
+        out += ", column ";
+        append_uint(out, loc.column);
+        out += ": ";
+        out += msg;
+        return out;
     }
 
     SourceLocation location_;

@@ -23,6 +23,7 @@
 #include "value.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -100,8 +101,21 @@ void to_json(JsonValue& j, const std::optional<T>& opt) {
 // =====================================================================
 
 inline void from_json(const JsonValue& j, bool& v)         { v = j.as_bool(); }
-inline void from_json(const JsonValue& j, int& v)          { v = static_cast<int>(j.as_integer()); }
-inline void from_json(const JsonValue& j, unsigned& v)      { v = static_cast<unsigned>(j.as_integer()); }
+inline void from_json(const JsonValue& j, int& v) {
+    const int64_t n = j.as_integer();
+    if (n < static_cast<int64_t>(std::numeric_limits<int>::min()) ||
+        n > static_cast<int64_t>(std::numeric_limits<int>::max())) {
+        throw OutOfRangeError("integer value out of range for int");
+    }
+    v = static_cast<int>(n);
+}
+inline void from_json(const JsonValue& j, unsigned& v) {
+    const uint64_t n = j.as_uinteger();
+    if (n > static_cast<uint64_t>(std::numeric_limits<unsigned>::max())) {
+        throw OutOfRangeError("integer value out of range for unsigned");
+    }
+    v = static_cast<unsigned>(n);
+}
 inline void from_json(const JsonValue& j, int64_t& v)      { v = j.as_integer(); }
 inline void from_json(const JsonValue& j, uint64_t& v)     { v = j.as_uinteger(); }
 inline void from_json(const JsonValue& j, float& v)        { v = static_cast<float>(j.as_float()); }

@@ -20,10 +20,12 @@
 #include "error.hpp"
 #include "fwd.hpp"
 
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <memory_resource>
 #include <new>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -256,13 +258,13 @@ public:
     JsonValue& operator[](size_t index) {
         auto& a = as_array();
         if (JSON_UNLIKELY(index >= a.size()))
-            throw OutOfRangeError("array index " + std::to_string(index) + " out of range (size=" + std::to_string(a.size()) + ")");
+            throw OutOfRangeError("array index " + size_to_string(index) + " out of range (size=" + size_to_string(a.size()) + ")");
         return a[index];
     }
     const JsonValue& operator[](size_t index) const {
         const auto& a = as_array();
         if (JSON_UNLIKELY(index >= a.size()))
-            throw OutOfRangeError("array index " + std::to_string(index) + " out of range (size=" + std::to_string(a.size()) + ")");
+            throw OutOfRangeError("array index " + size_to_string(index) + " out of range (size=" + size_to_string(a.size()) + ")");
         return a[index];
     }
     JsonValue& operator[](int index) { return operator[](static_cast<size_t>(index)); }
@@ -343,7 +345,9 @@ public:
                     uint64_t uv = is_uinteger() ? u_.u : other.u_.u;
                     return sv >= 0 && static_cast<uint64_t>(sv) == uv;
                 }
-                return as_float() == other.as_float();
+                const double a = as_float();
+                const double b = other.as_float();
+                return !(a < b) && !(a > b);
             }
             return false;
         }
@@ -352,7 +356,11 @@ public:
             case Type::Bool:    return u_.b == other.u_.b;
             case Type::Integer:  return u_.i == other.u_.i;
             case Type::UInteger: return u_.u == other.u_.u;
-            case Type::Float:   return u_.d == other.u_.d;
+            case Type::Float: {
+                const double a = u_.d;
+                const double b = other.u_.d;
+                return !(a < b) && !(a > b);
+            }
             case Type::String:  return str_view() == other.str_view();
             case Type::Array:   return *u_.arr == *other.u_.arr;
             case Type::Object:  return *u_.obj == *other.u_.obj;
@@ -380,11 +388,24 @@ private:
     static constexpr size_t kSsoMax = 15;
     static constexpr uint8_t kHeapTag = 0xFF;
     static constexpr uint8_t kArenaFlag = 0x01;
+    static constexpr size_t kArenaMaxStringLen = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
 
     bool is_sso() const noexcept { return sso_len_ != kHeapTag; }
 
     /// Check if this value has arena-allocated payload.
     bool is_arena() const noexcept { return pad_[0] & kArenaFlag; }
+
+    /// Arena string length is packed into uint32_t in pad_[1..4].
+    static bool can_store_arena_len(size_t len) noexcept {
+        return len <= kArenaMaxStringLen;
+    }
+
+    static std::string size_to_string(size_t v) {
+        char buf[32];
+        auto [p, ec] = std::to_chars(buf, buf + sizeof(buf), v);
+        if (ec == std::errc{}) return std::string(buf, static_cast<size_t>(p - buf));
+        return "?";
+    }
 
     /// Store a raw arena string: pointer + length packed into pad_[1..4].
     void set_arena_str(const char* p, uint32_t len) noexcept {
@@ -412,7 +433,7 @@ private:
             sso_len_ = static_cast<uint8_t>(len);
             std::memcpy(u_.sso_buf, s, len);
             u_.sso_buf[len] = '\0';
-        } else if (JSON_UNLIKELY(detail::current_arena != nullptr)) {
+        } else if (JSON_UNLIKELY(detail::current_arena != nullptr && can_store_arena_len(len))) {
             sso_len_ = kHeapTag;
             auto* buf = static_cast<char*>(
                 detail::current_arena->allocate(len, 1));
@@ -430,7 +451,7 @@ private:
             sso_len_ = static_cast<uint8_t>(len);
             std::memcpy(u_.sso_buf, s.data(), len);
             u_.sso_buf[len] = '\0';
-        } else if (JSON_UNLIKELY(detail::current_arena != nullptr)) {
+        } else if (JSON_UNLIKELY(detail::current_arena != nullptr && can_store_arena_len(len))) {
             sso_len_ = kHeapTag;
             auto* buf = static_cast<char*>(
                 detail::current_arena->allocate(len, 1));
@@ -451,7 +472,7 @@ private:
                     std::memcpy(u_.sso_buf, o.u_.sso_buf, sizeof(u_.sso_buf));
                 } else {
                     auto sv = o.str_view();
-                    if (JSON_UNLIKELY(arena != nullptr)) {
+                    if (JSON_UNLIKELY(arena != nullptr && can_store_arena_len(sv.size()))) {
                         sso_len_ = kHeapTag;
                         auto* buf = static_cast<char*>(arena->allocate(sv.size(), 1));
                         std::memcpy(buf, sv.data(), sv.size());

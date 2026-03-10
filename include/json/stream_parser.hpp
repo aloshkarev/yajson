@@ -83,22 +83,6 @@ private:
     size_t size_ = 0;
 };
 
-/// @brief Try to extract the file descriptor from an ifstream (Linux/macOS).
-/// Returns -1 if not possible (e.g., stringstream, already-closed, etc.).
-inline int try_get_fd(std::istream& is) noexcept {
-    // Check if this is a filebuf
-    auto* fbuf = dynamic_cast<std::filebuf*>(is.rdbuf());
-    if (!fbuf) return -1;
-
-    // POSIX extension: try to get the fd from the filebuf
-    // Unfortunately, there's no portable way to do this in C++17.
-    // We'll use the /proc/self/fd trick or just fall back.
-    // For now, return -1 to fall back to read_stream().
-    // Users who want mmap should use parse_file() directly.
-    (void)fbuf;
-    return -1;
-}
-
 #endif // YAJSON_HAS_MMAP
 
 /// @brief Efficiently read an entire istream into a string.

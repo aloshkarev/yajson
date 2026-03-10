@@ -146,6 +146,17 @@ TEST(Parser, StringWithUnicodeEscapeLowerHex) {
     EXPECT_EQ(v.as_string(), "j");
 }
 
+TEST(Parser, StringWithUnescapedControlCharRejectedByDefault) {
+    EXPECT_THROW((void)parse("\"line\nbreak\""), ParseError);
+}
+
+TEST(Parser, StringWithUnescapedControlCharAllowedWithOption) {
+    ParseOptions opts;
+    opts.allow_control_chars = true;
+    auto v = parse("\"line\nbreak\"", opts);
+    EXPECT_EQ(v.as_string(), std::string("line\nbreak"));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Arrays
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -331,6 +342,26 @@ TEST(Parser, ErrorInvalidNumber) {
 
 TEST(Parser, ErrorUnexpectedCharacter) {
     EXPECT_THROW(parse("@"), ParseError);
+}
+
+TEST(Parser, HexBoundariesAndOverflow) {
+    ParseOptions opts;
+    opts.allow_hex_numbers = true;
+
+    auto a = parse("0x7fffffffffffffff", opts);
+    EXPECT_TRUE(a.is_integer());
+    EXPECT_EQ(a.as_integer(), std::numeric_limits<int64_t>::max());
+
+    auto b = parse("0x8000000000000000", opts);
+    EXPECT_TRUE(b.is_uinteger());
+    EXPECT_EQ(b.as_uinteger(), (std::numeric_limits<uint64_t>::max() / 2) + 1u);
+
+    auto c = parse("-0x8000000000000000", opts);
+    EXPECT_TRUE(c.is_integer());
+    EXPECT_EQ(c.as_integer(), std::numeric_limits<int64_t>::min());
+
+    EXPECT_THROW((void)parse("-0x8000000000000001", opts), ParseError);
+    EXPECT_THROW((void)parse("0x10000000000000000", opts), ParseError);
 }
 
 TEST(Parser, ErrorLocationInfo) {

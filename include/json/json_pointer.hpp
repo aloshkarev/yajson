@@ -18,6 +18,7 @@
 #include "value.hpp"
 
 #include <charconv>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,39 +47,43 @@ public:
         std::string_view src(source_);
         src.remove_prefix(1);
 
-        // Two-pass approach to avoid dangling string_views from vector reallocation.
-        // Pass 1: collect segments and count escapes needed.
-        struct SegInfo {
-            std::string_view segment;
-            bool needs_unescape;
-        };
-        std::vector<SegInfo> segs;
+        // Two-pass approach to keep token views stable.
+        // Pass 1: count total tokens and escaped tokens.
+        size_t token_count = 0;
+        size_t esc_count = 0;
         {
             std::string_view scan = src;
             do {
                 auto pos = scan.find('/');
                 auto seg = (pos == std::string_view::npos) ? scan : scan.substr(0, pos);
-                segs.push_back({seg, seg.find('~') != std::string_view::npos});
+                ++token_count;
+                if (seg.find('~') != std::string_view::npos) ++esc_count;
                 if (pos == std::string_view::npos) break;
                 scan.remove_prefix(pos + 1);
             } while (true);
         }
 
-        // Reserve unescaped_ so no reallocation happens during push_back.
-        size_t esc_count = 0;
-        for (const auto& s : segs) if (s.needs_unescape) ++esc_count;
-        unescaped_.reserve(esc_count);
+        unescaped_.resize(esc_count);
+        tokens_.resize(token_count);
 
-        // Pass 2: build unescaped strings and token views.
-        tokens_.reserve(segs.size());
-        for (const auto& s : segs) {
-            if (s.needs_unescape) {
-                unescaped_.push_back(unescape(s.segment));
-                tokens_.push_back(std::string_view(unescaped_.back()));
+        // Pass 2: materialize escaped tokens and assign views.
+        size_t token_idx = 0;
+        size_t esc_idx = 0;
+        std::string_view scan = src;
+        do {
+            auto pos = scan.find('/');
+            auto seg = (pos == std::string_view::npos) ? scan : scan.substr(0, pos);
+            if (seg.find('~') != std::string_view::npos) {
+                unescaped_[esc_idx] = unescape(seg);
+                tokens_[token_idx] = std::string_view(unescaped_[esc_idx]);
+                ++esc_idx;
             } else {
-                tokens_.push_back(s.segment);
+                tokens_[token_idx] = seg;
             }
-        }
+            ++token_idx;
+            if (pos == std::string_view::npos) break;
+            scan.remove_prefix(pos + 1);
+        } while (true);
     }
 
     /// Copy constructor — must fixup string_view pointers.
@@ -110,7 +115,7 @@ public:
                 if (!p)
                     throw OutOfRangeError("JSON pointer: key not found \"" +
                                           std::string(tok) + "\" at depth " +
-                                          std::to_string(i));
+                                          size_to_string(i));
                 cur = p;
             } else if (cur->is_array()) {
                 size_t idx = parse_index(tok, cur->as_array().size());
@@ -118,7 +123,7 @@ public:
             } else {
                 throw TypeError("JSON pointer: cannot index into " +
                                 std::string(type_name(cur->type())) +
-                                " at depth " + std::to_string(i));
+                                " at depth " + size_to_string(i));
             }
         }
         return *cur;
@@ -236,7 +241,10 @@ public:
     }
 
     [[nodiscard]] JsonPointer append(size_t index) const {
-        return append(std::to_string(index));
+        char buf[32];
+        auto [p, ec] = std::to_chars(buf, buf + sizeof(buf), index);
+        if (ec != std::errc{}) throw OutOfRangeError("JSON pointer: invalid array index");
+        return append(std::string_view(buf, static_cast<size_t>(p - buf)));
     }
 
     /// Get parent pointer (empty if already root).
@@ -284,22 +292,28 @@ private:
 
     /// Rebuild tokens_ after copy, adjusting string_view pointers.
     void rebuild_tokens(const JsonPointer& o) {
-        tokens_.reserve(o.tokens_.size());
-        for (const auto& tok : o.tokens_) {
+        tokens_.resize(o.tokens_.size());
+        for (size_t i = 0; i < o.tokens_.size(); ++i) {
+            const auto& tok = o.tokens_[i];
             // Determine if this token points into source_ or unescaped_
             if (!o.source_.empty() &&
                 tok.data() >= o.source_.data() &&
                 tok.data() < o.source_.data() + o.source_.size()) {
                 // Token is a view into source_ — adjust to our source_
                 size_t offset = static_cast<size_t>(tok.data() - o.source_.data());
-                tokens_.push_back(std::string_view(source_.data() + offset, tok.size()));
+                tokens_[i] = std::string_view(source_.data() + offset, tok.size());
             } else {
                 // Token points into unescaped_ — find the matching string
+                bool matched = false;
                 for (size_t j = 0; j < o.unescaped_.size(); ++j) {
                     if (tok.data() == o.unescaped_[j].data()) {
-                        tokens_.push_back(std::string_view(unescaped_[j]));
+                        tokens_[i] = std::string_view(unescaped_[j]);
+                        matched = true;
                         break;
                     }
+                }
+                if (!matched) {
+                    throw std::logic_error("JsonPointer token rebuild failed");
                 }
             }
         }
@@ -343,9 +357,16 @@ private:
                                   std::string(tok) + "\"");
         if (idx >= arr_size)
             throw OutOfRangeError("JSON pointer: array index " +
-                                  std::to_string(idx) + " >= size " +
-                                  std::to_string(arr_size));
+                                  size_to_string(idx) + " >= size " +
+                                  size_to_string(arr_size));
         return idx;
+    }
+
+    static std::string size_to_string(size_t value) {
+        char buf[32];
+        auto [p, ec] = std::to_chars(buf, buf + sizeof(buf), value);
+        if (ec == std::errc{}) return std::string(buf, static_cast<size_t>(p - buf));
+        return "?";
     }
 };
 

@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -380,6 +381,11 @@ TEST(Conversion, FromValueBasicTypes) {
     EXPECT_DOUBLE_EQ(from_value<double>(JsonValue(3.14)), 3.14);
     EXPECT_EQ(from_value<bool>(JsonValue(true)), true);
     EXPECT_EQ(from_value<std::string>(JsonValue("hi")), "hi");
+}
+
+TEST(Conversion, NarrowingAndSignChecks) {
+    EXPECT_THROW((void)from_value<unsigned>(JsonValue(-1)), TypeError);
+    EXPECT_THROW((void)from_value<int>(JsonValue(std::numeric_limits<int64_t>::max())), OutOfRangeError);
 }
 
 TEST(Conversion, VectorRoundtrip) {

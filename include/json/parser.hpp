@@ -318,6 +318,12 @@ private:
         // Fast path: probe for closing quote with SIMD
         const char* delim = simd::find_string_delimiter(ptr_, end_);
         if (JSON_LIKELY(delim < end_ && *delim == '"')) {
+            if (JSON_UNLIKELY(!opts_.allow_control_chars)) {
+                const char* bad = simd::find_needs_escape<false>(ptr_, delim);
+                if (bad < delim && static_cast<unsigned char>(*bad) < 0x20) {
+                    error("unescaped control character in string", errc::invalid_escape);
+                }
+            }
             // No escapes — zero-copy from input buffer
             std::string result(ptr_, static_cast<size_t>(delim - ptr_));
             ptr_ = delim + 1;
@@ -353,13 +359,25 @@ private:
                 // SIMD-accelerated search for '"' or '\\'
                 const char* delim = simd::find_string_delimiter(ptr_, end_);
                 if (delim > ptr_) {
+                    if (JSON_UNLIKELY(!opts_.allow_control_chars)) {
+                        const char* bad = simd::find_needs_escape<false>(ptr_, delim);
+                        if (bad < delim && static_cast<unsigned char>(*bad) < 0x20) {
+                            error("unescaped control character in string", errc::invalid_escape);
+                        }
+                    }
                     result.append(ptr_, static_cast<size_t>(delim - ptr_));
                     ptr_ = delim;
                 }
             } else {
                 // Scalar search for single-quote delimiter — batch copy
                 const char* run_start = ptr_;
-                while (ptr_ < end_ && *ptr_ != quote && *ptr_ != '\\') ++ptr_;
+                while (ptr_ < end_ && *ptr_ != quote && *ptr_ != '\\') {
+                    if (JSON_UNLIKELY(!opts_.allow_control_chars &&
+                                      static_cast<unsigned char>(*ptr_) < 0x20)) {
+                        error("unescaped control character in string", errc::invalid_escape);
+                    }
+                    ++ptr_;
+                }
                 if (ptr_ > run_start)
                     result.append(run_start, static_cast<size_t>(ptr_ - run_start));
             }
@@ -476,6 +494,12 @@ private:
         // Fast path: probe for closing quote with SIMD
         const char* delim = simd::find_string_delimiter(ptr_, end_);
         if (JSON_LIKELY(delim < end_ && *delim == '"')) {
+            if (JSON_UNLIKELY(!opts_.allow_control_chars)) {
+                const char* bad = simd::find_needs_escape<false>(ptr_, delim);
+                if (bad < delim && static_cast<unsigned char>(*bad) < 0x20) {
+                    error("unescaped control character in string", errc::invalid_escape);
+                }
+            }
             // No escapes — construct JsonValue directly from input span
             std::string_view sv(ptr_, static_cast<size_t>(delim - ptr_));
             ptr_ = delim + 1;
@@ -508,7 +532,8 @@ private:
         // pointing directly to it — no allocation, no copy.
         if (arena_ &&
             temp_mr_ == static_cast<std::pmr::memory_resource*>(arena_) &&
-            len > JsonValue::kSsoMax) {
+            len > JsonValue::kSsoMax &&
+            len <= static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
             JsonValue v;
             v.kind_ = Type::String;
             v.sso_len_ = JsonValue::kHeapTag;
@@ -653,16 +678,16 @@ private:
             // Common case: exp10 in [-22, +22] — exact powers of 10 in double
             if (exp10 >= -22 && exp10 <= 22) {
                 // Table of exact powers of 10 representable in double
-                static constexpr double kPow10[] = {
+                static constexpr double kSmallPow10[] = {
                     1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,
                     1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,
                     1e20, 1e21, 1e22
                 };
                 double d;
                 if (exp10 >= 0) {
-                    d = static_cast<double>(mantissa) * kPow10[exp10];
+                    d = static_cast<double>(mantissa) * kSmallPow10[exp10];
                 } else {
-                    d = static_cast<double>(mantissa) / kPow10[-exp10];
+                    d = static_cast<double>(mantissa) / kSmallPow10[-exp10];
                 }
                 if (negative) d = -d;
                 return JsonValue(d);
@@ -680,6 +705,7 @@ private:
 
         uint64_t val = 0;
         bool has_digit = false;
+        bool overflow = false;
         while (ptr_ < end_) {
             char h = *ptr_;
             uint64_t digit;
@@ -688,14 +714,32 @@ private:
             else if (h >= 'A' && h <= 'F') digit = static_cast<uint64_t>(h - 'A' + 10);
             else break;
             has_digit = true;
-            val = (val << 4) | digit;
+            if (JSON_UNLIKELY(val > (std::numeric_limits<uint64_t>::max() >> 4))) {
+                overflow = true;
+            } else {
+                val = (val << 4) | digit;
+            }
             ++ptr_;
         }
         if (JSON_UNLIKELY(!has_digit))
             error("expected hex digit", errc::invalid_number);
+        if (JSON_UNLIKELY(overflow))
+            error("hex integer overflow", errc::integer_overflow);
 
-        auto signed_val = static_cast<int64_t>(val);
-        return JsonValue(negative ? -signed_val : signed_val);
+        if (negative) {
+            constexpr uint64_t kMaxNegAbs =
+                static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1u;
+            if (JSON_UNLIKELY(val > kMaxNegAbs))
+                error("hex integer overflow", errc::integer_overflow);
+            if (val == kMaxNegAbs) {
+                return JsonValue(std::numeric_limits<int64_t>::min());
+            }
+            return JsonValue(-static_cast<int64_t>(val));
+        }
+        if (val <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            return JsonValue(static_cast<int64_t>(val));
+        }
+        return JsonValue(val);
     }
 
     JSON_NOINLINE JsonValue parse_float_slow(const char* start) {

@@ -133,7 +133,9 @@ public:
     template <typename Fn>
     void update(Fn&& fn) {
         std::unique_lock lock(mutex_);
-        value_ = fn(std::move(value_));
+        // Strong exception safety: keep the current value intact if fn throws.
+        JsonValue next = fn(value_);
+        value_ = std::move(next);
     }
 
     /// @brief Atomic insertion into an object.
